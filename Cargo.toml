@@ -1,0 +1,11 @@
+[package]
+name = "deep-dark-video-manager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+macros = { path = "src/macros" }
+rand = "0.8"
+clap = { version = "3.0", features = ["derive"] }
+rusqlite = "0.26"
+ffmpeg-next = "4.4"
