@@ -264,7 +264,7 @@ fn clear_directory(dir: &str) -> std::io::Result<()> {
     for entry in read_dir {
         let entry = entry?;
         let md = entry.metadata()?;
-        if !md.is_dir() {
+        if md.is_symlink() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             std::fs::remove_file(format!("{dir}/{name}"))?;
