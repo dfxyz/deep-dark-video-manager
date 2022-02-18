@@ -117,7 +117,7 @@ pub fn derive_select(stream: TokenStream) -> TokenStream {
             fn select<P: ::rusqlite::Params>(db: &::rusqlite::Connection, where_expr: &str, where_params: P) -> ::rusqlite::Result<Vec<Self>> {
                 let mut stmt = String::from(#sql);
                 if where_expr.len() > 0 {
-                    stmt.push_str(" WHERE ");
+                    stmt.push(' ');
                     stmt.push_str(where_expr);
                 }
                 let mut stmt = db.prepare(&stmt)?;

@@ -1,5 +1,3 @@
-extern crate core;
-
 use clap::{AppSettings, Args, Parser};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::media::Type;
@@ -60,7 +58,7 @@ enum Command {
 #[clap(setting(AppSettings::DeriveDisplayOrder))]
 struct FilterArg {
     #[clap(short, long)]
-    #[clap(help = "The filtered video(s) should start with <NAME>")]
+    #[clap(help = "The name(s) of filtered video(s) should start with <NAME>")]
     name: Option<String>,
 
     #[clap(short, long)]
@@ -185,16 +183,18 @@ fn prepare_database() -> rusqlite::Connection {
     c
 }
 
-fn prepare_where_expr(arg: &FilterArg) -> (String, Vec<String>) {
+fn prepare_where_clause(arg: &FilterArg) -> (String, Vec<String>) {
     let mut exprs = vec![];
     let mut params = vec![];
 
     if let Some(name) = &arg.name {
-        exprs.push("name LIKE ?");
-        params.push(format!("{name}%"));
+        let name = name.to_ascii_uppercase();
+        exprs.push("name GLOB ?");
+        params.push(format!("{name}*"));
     }
     if let Some(tag) = &arg.tag {
-        exprs.push("tag LIKE ?");
+        let tag = tag.to_ascii_uppercase();
+        exprs.push("tag=?");
         params.push(tag.clone());
     }
     if let Some(duration) = &arg.duration {
@@ -205,7 +205,15 @@ fn prepare_where_expr(arg: &FilterArg) -> (String, Vec<String>) {
         params.push(max.to_string());
     }
 
-    (exprs.join(" AND "), params)
+    let clause = if exprs.is_empty() {
+        String::from("ORDER BY name")
+    } else {
+        let mut s = String::from("WHERE ");
+        s.push_str(&exprs.join(" AND "));
+        s.push_str(" ORDER BY name");
+        s
+    };
+    (clause, params)
 }
 
 fn readable_file_size(file_size: u32) -> String {
@@ -323,7 +331,7 @@ fn do_add_file(dir: &str, file_name: &str) {
         .collect();
     let result: Result<Option<u32>, _> = db_connection()
         .query_row(
-            "SELECT 1 FROM video WHERE name LIKE ?",
+            "SELECT 1 FROM video WHERE name=?",
             rusqlite::params![&name],
             |row| row.get(0),
         )
@@ -438,8 +446,10 @@ fn do_add_file(dir: &str, file_name: &str) {
 
 fn do_tag(name: String, tag: String) {
     prepare_environments();
+    let name = name.to_ascii_uppercase();
+    let tag = tag.to_ascii_uppercase();
     match db_connection().execute(
-        "UPDATE video SET tag=? WHERE name LIKE ?",
+        "UPDATE video SET tag=? WHERE name=?",
         rusqlite::params![&tag, &name],
     ) {
         Ok(n) => {
@@ -457,7 +467,7 @@ fn do_tag(name: String, tag: String) {
 
 fn do_list(arg: FilterArg, verbose: bool) {
     prepare_environments();
-    let (where_clause, where_params) = prepare_where_expr(&arg);
+    let (where_clause, where_params) = prepare_where_clause(&arg);
     let where_params: Vec<&dyn rusqlite::ToSql> = where_params
         .iter()
         .map(|s| s as &dyn rusqlite::ToSql)
@@ -483,6 +493,7 @@ fn do_list_verbosely<P: rusqlite::Params>(where_clause: &str, params: P, limit: 
         let mut rng = rand::thread_rng();
         entries.shuffle(&mut rng);
         entries.truncate(limit);
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
     }
     for entry in entries {
         let name = entry.name;
@@ -516,6 +527,7 @@ fn do_list_briefly<P: rusqlite::Params>(where_clause: &str, params: P, limit: us
         let mut rng = rand::thread_rng();
         entries.shuffle(&mut rng);
         entries.truncate(limit);
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
     }
     for entry in entries {
         let name = entry.name;
@@ -529,7 +541,7 @@ fn do_list_briefly<P: rusqlite::Params>(where_clause: &str, params: P, limit: us
 
 fn do_link(arg: FilterArg) {
     prepare_environments();
-    let (where_clause, where_params) = prepare_where_expr(&arg);
+    let (where_clause, where_params) = prepare_where_clause(&arg);
     let where_params: Vec<&dyn rusqlite::ToSql> = where_params
         .iter()
         .map(|s| s as &dyn rusqlite::ToSql)
@@ -639,7 +651,7 @@ fn do_check(fix: bool) {
         println!("'{name}' exists in database, but not in file system");
         if fix {
             match db_connection().execute(
-                "DELETE FROM video WHERE file_name LIKE ?",
+                "DELETE FROM video WHERE file_name=?",
                 rusqlite::params![name],
             ) {
                 Ok(_) => {
