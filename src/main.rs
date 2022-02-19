@@ -28,6 +28,12 @@ enum Command {
         tag: String,
     },
 
+    #[clap(about = "Play the video")]
+    Play {
+        #[clap(help = "The name of the video")]
+        name: String,
+    },
+
     #[clap(about = "List the video(s) filtered by given condition(s)")]
     List {
         #[clap(flatten)]
@@ -39,7 +45,7 @@ enum Command {
 
         #[clap(long)]
         #[clap(help = "Make symlink(s) from the filtered video(s) into directory './links/'")]
-        link: bool
+        link: bool,
     },
 
     #[clap(about = "Clean './links/'")]
@@ -135,6 +141,7 @@ fn main() {
     match arg.command {
         Command::Add => do_add(),
         Command::Tag { name, tag } => do_tag(name, tag),
+        Command::Play { name } => do_play(name),
         Command::List { arg, verbose, link } => do_list(arg, verbose, link),
         Command::Clean => do_clean(),
         Command::Check { fix } => do_check(fix),
@@ -459,6 +466,43 @@ fn do_tag(name: String, tag: String) {
         }
         Err(e) => {
             eprintln!("failed to tag '{name}' with '{tag}': {e}");
+        }
+    }
+}
+
+fn do_play(name: String) {
+    if cfg!(not(windows)) {
+        eprintln!("subcommand 'play' is only supported on Windows");
+        return;
+    }
+
+    prepare_environments();
+    let name = name.to_ascii_uppercase();
+    match db_connection()
+        .query_row(
+            "SELECT file_name FROM video WHERE name=?",
+            rusqlite::params![&name],
+            |row| {
+                let s: rusqlite::Result<String> = row.get(0);
+                s
+            },
+        )
+        .optional()
+    {
+        Ok(row) => match row {
+            None => {
+                eprintln!("entry '{name}' not found");
+            }
+            Some(file_name) => {
+                std::process::Command::new("cmd.exe")
+                    .arg("/C")
+                    .arg("start")
+                    .arg(format!("files/{file_name}"))
+                    .spawn().unwrap();
+            }
+        },
+        Err(e) => {
+            eprintln!("failed to query the database: {e}");
         }
     }
 }
