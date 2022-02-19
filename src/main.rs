@@ -36,12 +36,11 @@ enum Command {
         #[clap(short, long)]
         #[clap(help = "Show verbose information")]
         verbose: bool,
-    },
 
-    #[clap(
-        about = "Make symlink(s) from the video(s) filtered by given condition(s) into './links/'"
-    )]
-    Link(FilterArg),
+        #[clap(long)]
+        #[clap(help = "Make symlink(s) from the filtered video(s) into directory './links/'")]
+        link: bool
+    },
 
     #[clap(about = "Clean './links/'")]
     Clean,
@@ -136,8 +135,7 @@ fn main() {
     match arg.command {
         Command::Add => do_add(),
         Command::Tag { name, tag } => do_tag(name, tag),
-        Command::List { arg, verbose } => do_list(arg, verbose),
-        Command::Link(arg) => do_link(arg),
+        Command::List { arg, verbose, link } => do_list(arg, verbose, link),
         Command::Clean => do_clean(),
         Command::Check { fix } => do_check(fix),
     }
@@ -465,22 +463,22 @@ fn do_tag(name: String, tag: String) {
     }
 }
 
-fn do_list(arg: FilterArg, verbose: bool) {
+fn do_list(filter_arg: FilterArg, verbose: bool, link: bool) {
     prepare_environments();
-    let (where_clause, where_params) = prepare_where_clause(&arg);
+    let (where_clause, where_params) = prepare_where_clause(&filter_arg);
     let where_params: Vec<&dyn rusqlite::ToSql> = where_params
         .iter()
         .map(|s| s as &dyn rusqlite::ToSql)
         .collect();
     let where_params = where_params.as_slice();
     if verbose {
-        do_list_verbosely(&where_clause, where_params, arg.limit);
+        do_list_verbosely(&where_clause, where_params, filter_arg.limit, link);
     } else {
-        do_list_briefly(&where_clause, where_params, arg.limit);
+        do_list_briefly(&where_clause, where_params, filter_arg.limit, link);
     }
 }
 
-fn do_list_verbosely<P: rusqlite::Params>(where_clause: &str, params: P, limit: usize) {
+fn do_list_verbosely<P: rusqlite::Params>(where_clause: &str, params: P, limit: usize, link: bool) {
     let mut entries: Vec<VideoEntry> =
         match VideoEntry::select(db_connection(), where_clause, params) {
             Ok(v) => v,
@@ -495,26 +493,44 @@ fn do_list_verbosely<P: rusqlite::Params>(where_clause: &str, params: P, limit: 
         entries.truncate(limit);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
     }
-    for entry in entries {
-        let name = entry.name;
-        let tag = entry.tag;
-        let file_name = entry.file_name;
+    for entry in &entries {
+        let name = &entry.name;
+        let tag = &entry.tag;
+        let file_name = &entry.file_name;
         let file_size = readable_file_size(entry.file_size);
         let duration = readable_duration(entry.duration);
-        let video_codec = entry.video_codec;
+        let video_codec = &entry.video_codec;
         let video_bit_rate = entry.video_bit_rate;
         let video_frame_rate = entry.video_frame_rate;
         let video_width = entry.video_width;
         let video_height = entry.video_height;
-        let audio_codec = entry.audio_codec;
+        let audio_codec = &entry.audio_codec;
         let audio_bit_rate = entry.audio_bit_rate;
         println!("{name}[{tag}] {duration} {file_name}/{file_size}");
         println!("  video: codec={video_codec}, bit_rate={video_bit_rate}kbps, frame_rate={video_frame_rate}fps, resolution={video_width}x{video_height}");
         println!("  audio: codec={audio_codec}, bit_rate={audio_bit_rate}kbps");
     }
+    if !entries.is_empty() && link {
+        match clear_directory("links") {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("failed to clear directory './links/': {e}");
+                return;
+            }
+        }
+        for entry in &entries {
+            let file_name = &entry.file_name;
+            match make_link(&file_name) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("failed to make link for '{file_name}': {e}")
+                }
+            }
+        }
+    }
 }
 
-fn do_list_briefly<P: rusqlite::Params>(where_clause: &str, params: P, limit: usize) {
+fn do_list_briefly<P: rusqlite::Params>(where_clause: &str, params: P, limit: usize, link: bool) {
     let mut entries: Vec<BriefVideoEntry> =
         match BriefVideoEntry::select(db_connection(), where_clause, params) {
             Ok(v) => v,
@@ -529,75 +545,29 @@ fn do_list_briefly<P: rusqlite::Params>(where_clause: &str, params: P, limit: us
         entries.truncate(limit);
         entries.sort_by(|a, b| a.name.cmp(&b.name));
     }
-    for entry in entries {
-        let name = entry.name;
-        let tag = entry.tag;
-        let file_name = entry.file_name;
+    for entry in &entries {
+        let name = &entry.name;
+        let tag = &entry.tag;
+        let file_name = &entry.file_name;
         let file_size = readable_file_size(entry.file_size);
         let duration = readable_duration(entry.duration);
         println!("{name}[{tag}] {duration} {file_name}/{file_size}");
     }
-}
-
-fn do_link(arg: FilterArg) {
-    prepare_environments();
-    let (where_clause, where_params) = prepare_where_clause(&arg);
-    let where_params: Vec<&dyn rusqlite::ToSql> = where_params
-        .iter()
-        .map(|s| s as &dyn rusqlite::ToSql)
-        .collect();
-    let where_params = where_params.as_slice();
-
-    let mut stmt = db_connection()
-        .prepare(&format!("SELECT file_name FROM video {where_clause}"))
-        .unwrap();
-    let rows = match stmt.query_map(where_params, |row| {
-        let s: String = row.get(0)?;
-        Ok(s)
-    }) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("failed to query database: {}", e);
-            return;
-        }
-    };
-
-    let mut file_names: Vec<String> = vec![];
-    for row in rows {
-        match row {
-            Ok(s) => {
-                file_names.push(s);
-            }
+    if !entries.is_empty() && link {
+        match clear_directory("links") {
+            Ok(_) => {}
             Err(e) => {
-                eprintln!("failed to query database: {}", e);
+                eprintln!("failed to clear directory './links/': {e}");
                 return;
             }
         }
-    }
-
-    if file_names.is_empty() {
-        println!("no video matches the given condition(s)");
-        return;
-    }
-    match clear_directory("links") {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("failed to clear directory './links/': {e}");
-            return;
-        }
-    }
-    if arg.limit > 0 {
-        let mut rng = rand::thread_rng();
-        file_names.shuffle(&mut rng);
-        file_names.truncate(arg.limit);
-    }
-    for file_name in file_names {
-        match make_link(&file_name) {
-            Ok(_) => {
-                println!("link made for '{file_name}'");
-            }
-            Err(e) => {
-                eprintln!("failed to make link for '{file_name}': {e}")
+        for entry in &entries {
+            let file_name = &entry.file_name;
+            match make_link(&file_name) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("failed to make link for '{file_name}': {e}")
+                }
             }
         }
     }
